@@ -67,6 +67,14 @@ fi
 DTYPE=${MODEL_DTYPE:-float32}
 echo "Using dtype: $DTYPE"
 
+# Set environment variable to trust remote code for datasets only if TRUST_REMOTE_CODE is true
+if [ "$TRUST_REMOTE_CODE" = "True" ]; then
+    echo "Setting HF_DATASETS_TRUST_REMOTE_CODE=1 as TRUST_REMOTE_CODE is True"
+    export HF_DATASETS_TRUST_REMOTE_CODE=1
+else
+    echo "TRUST_REMOTE_CODE is not set to True. Datasets will not automatically execute remote code."
+fi
+
 # Run evaluation
 if [ "$BENCHMARK" == "nous" ]; then
     git clone -b add-agieval https://github.com/dmahan93/lm-evaluation-harness
