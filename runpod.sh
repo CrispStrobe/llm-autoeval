@@ -1,6 +1,27 @@
-# !/bin/bash
+#!/bin/bash
 
 start=$(date +%s)
+
+# Function to upload gist
+upload_gist() {
+    local content="$1"
+    local filename="$2"
+    local description="$3"
+
+    json_data=$(jq -n \
+                  --arg filename "$filename" \
+                  --arg content "$content" \
+                  --arg description "$description" \
+                  '{files: {($filename): {content: $content}}, description: $description, public: false}')
+
+    response=$(curl -s -X POST \
+         -H "Authorization: token $GITHUB_API_TOKEN" \
+         -H "Accept: application/vnd.github.v3+json" \
+         -d "$json_data" \
+         "https://api.github.com/gists")
+
+    echo "$response" | jq -r '.html_url'
+}
 
 # Detect the number of NVIDIA GPUs and create a device string
 gpu_count=$(nvidia-smi -L | wc -l)
@@ -19,7 +40,7 @@ done
 
 # Install dependencies
 apt update
-apt install -y screen vim git-lfs
+apt install -y screen vim git-lfs jq
 screen
 
 # Install common libraries
@@ -34,6 +55,12 @@ fi
 
 if [ "$DEBUG" == "True" ]; then
     echo "Launch LLM AutoEval in debug mode"
+fi
+
+if [ "$DEBUG_LOGS" == "True" ]; then
+    echo "Debug logs enabled. All outputs will be saved and uploaded as a gist."
+    log_file="benchmark_logs_$(date +%Y%m%d_%H%M%S).log"
+    exec &> >(tee -a "$log_file")
 fi
 
 # Set dtype based on environment variable or default to float32
@@ -221,6 +248,15 @@ elif [ "$BENCHMARK" == "eq-bench" ]; then
 
 else
     echo "Error: Invalid BENCHMARK value. Please set BENCHMARK to 'nous', 'openllm', or 'lighteval'."
+fi
+
+end=$(date +%s)
+echo "Elapsed Time: $(($end-$start)) seconds"
+
+if [ "$DEBUG_LOGS" == "True" ]; then
+    echo "Uploading logs to GitHub Gist..."
+    gist_url=$(upload_gist "$(cat $log_file)" "$log_file" "Benchmark logs for $BENCHMARK")
+    echo "Logs uploaded. Gist URL: $gist_url"
 fi
 
 if [ "$DEBUG" == "False" ]; then
