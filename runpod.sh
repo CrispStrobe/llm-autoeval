@@ -1,8 +1,21 @@
-#!/bin/bash
+# !/bin/bash
 
 start=$(date +%s)
 
-# (Existing GPU detection code remains unchanged)
+# Detect the number of NVIDIA GPUs and create a device string
+gpu_count=$(nvidia-smi -L | wc -l)
+if [ $gpu_count -eq 0 ]; then
+    echo "No NVIDIA GPUs detected. Exiting."
+    exit 1
+fi
+# Construct the CUDA device string
+cuda_devices=""
+for ((i=0; i<gpu_count; i++)); do
+    if [ $i -gt 0 ]; then
+        cuda_devices+=","
+    fi
+    cuda_devices+="$i"
+done
 
 # Install dependencies
 apt update
@@ -13,7 +26,15 @@ screen
 pip install -q requests accelerate sentencepiece pytablewriter einops protobuf huggingface_hub==0.21.4
 pip install -U transformers
 
-# (Existing Hugging Face login code remains unchanged)
+# Check if HUGGINGFACE_TOKEN is set and log in to Hugging Face
+if [ -n "$HUGGINGFACE_TOKEN" ]; then
+    echo "HUGGINGFACE_TOKEN is defined. Logging in..."
+    huggingface-cli login --token $HUGGINGFACE_TOKEN --add-to-git-credential
+fi
+
+if [ "$DEBUG" == "True" ]; then
+    echo "Launch LLM AutoEval in debug mode"
+fi
 
 # Set dtype based on environment variable or default to float32
 DTYPE=${MODEL_DTYPE:-float32}
@@ -35,7 +56,40 @@ if [ "$BENCHMARK" == "nous" ]; then
         --batch_size auto \
         --output_path ./${benchmark}.json
 
-    # (Repeat the change for the other benchmarks in the "nous" section)
+    benchmark="gpt4all"
+    echo "================== $(echo $benchmark | tr '[:lower:]' '[:upper:]') [2/4] =================="
+    python main.py \
+        --model hf-causal \
+        --model_args pretrained=$MODEL_ID,trust_remote_code=$TRUST_REMOTE_CODE,dtype=$DTYPE \
+        --tasks hellaswag,openbookqa,winogrande,arc_easy,arc_challenge,boolq,piqa \
+        --device cuda:$cuda_devices \
+        --batch_size auto \
+        --output_path ./${benchmark}.json
+
+    benchmark="truthfulqa"
+    echo "================== $(echo $benchmark | tr '[:lower:]' '[:upper:]') [3/4] =================="
+    python main.py \
+        --model hf-causal \
+        --model_args pretrained=$MODEL_ID,trust_remote_code=$TRUST_REMOTE_CODE,dtype=$DTYPE \
+        --tasks truthfulqa_mc \
+        --device cuda:$cuda_devices \
+        --batch_size auto \
+        --output_path ./${benchmark}.json
+
+    benchmark="bigbench"
+    echo "================== $(echo $benchmark | tr '[:lower:]' '[:upper:]') [4/4] =================="
+    python main.py \
+        --model hf-causal \
+        --model_args pretrained=$MODEL_ID,trust_remote_code=$TRUST_REMOTE_CODE,dtype=$DTYPE \
+        --tasks bigbench_causal_judgement,bigbench_date_understanding,bigbench_disambiguation_qa,bigbench_geometric_shapes,bigbench_logical_deduction_five_objects,bigbench_logical_deduction_seven_objects,bigbench_logical_deduction_three_objects,bigbench_movie_recommendation,bigbench_navigate,bigbench_reasoning_about_colored_objects,bigbench_ruin_names,bigbench_salient_translation_error_detection,bigbench_snarks,bigbench_sports_understanding,bigbench_temporal_sequences,bigbench_tracking_shuffled_objects_five_objects,bigbench_tracking_shuffled_objects_seven_objects,bigbench_tracking_shuffled_objects_three_objects \
+        --device cuda:$cuda_devices \
+        --batch_size auto \
+        --output_path ./${benchmark}.json
+
+    end=$(date +%s)
+    echo "Elapsed Time: $(($end-$start)) seconds"
+    
+    python ../llm-autoeval/main.py . $(($end-$start))
 
 elif [ "$BENCHMARK" == "openllm" ]; then
     git clone https://github.com/EleutherAI/lm-evaluation-harness
@@ -53,10 +107,97 @@ elif [ "$BENCHMARK" == "openllm" ]; then
         --batch_size auto \
         --output_path ./${benchmark}.json
 
-    # (Repeat the change for the other benchmarks in the "openllm" section)
+    benchmark="hellaswag"
+    echo "================== $(echo $benchmark | tr '[:lower:]' '[:upper:]') [2/6] =================="
+    accelerate launch -m lm_eval \
+        --model hf \
+        --model_args pretrained=${MODEL_ID},dtype=$DTYPE,trust_remote_code=$TRUST_REMOTE_CODE \
+        --tasks hellaswag \
+        --num_fewshot 10 \
+        --batch_size auto \
+        --output_path ./${benchmark}.json
+
+    benchmark="mmlu"
+    echo "================== $(echo $benchmark | tr '[:lower:]' '[:upper:]') [3/6] =================="
+    accelerate launch -m lm_eval \
+        --model hf \
+        --model_args pretrained=${MODEL_ID},dtype=$DTYPE,trust_remote_code=$TRUST_REMOTE_CODE \
+        --tasks mmlu \
+        --num_fewshot 5 \
+        --batch_size auto \
+        --verbosity DEBUG \
+        --output_path ./${benchmark}.json
+    
+    benchmark="truthfulqa"
+    echo "================== $(echo $benchmark | tr '[:lower:]' '[:upper:]') [4/6] =================="
+    accelerate launch -m lm_eval \
+        --model hf \
+        --model_args pretrained=${MODEL_ID},dtype=$DTYPE,trust_remote_code=$TRUST_REMOTE_CODE \
+        --tasks truthfulqa \
+        --num_fewshot 0 \
+        --batch_size auto \
+        --output_path ./${benchmark}.json
+    
+    benchmark="winogrande"
+    echo "================== $(echo $benchmark | tr '[:lower:]' '[:upper:]') [5/6] =================="
+    accelerate launch -m lm_eval \
+        --model hf \
+        --model_args pretrained=${MODEL_ID},dtype=$DTYPE,trust_remote_code=$TRUST_REMOTE_CODE \
+        --tasks winogrande \
+        --num_fewshot 5 \
+        --batch_size auto \
+        --output_path ./${benchmark}.json
+    
+    benchmark="gsm8k"
+    echo "================== $(echo $benchmark | tr '[:lower:]' '[:upper:]') [6/6] =================="
+    accelerate launch -m lm_eval \
+        --model hf \
+        --model_args pretrained=${MODEL_ID},dtype=$DTYPE,trust_remote_code=$TRUST_REMOTE_CODE \
+        --tasks gsm8k \
+        --num_fewshot 5 \
+        --batch_size auto \
+        --output_path ./${benchmark}.json
+
+    end=$(date +%s)
+    echo "Elapsed Time: $(($end-$start)) seconds"
+    
+    python ../llm-autoeval/main.py . $(($end-$start))
 
 elif [ "$BENCHMARK" == "lighteval" ]; then
-    # (The "lighteval" section remains unchanged as it doesn't specify dtype)
+    git clone https://github.com/huggingface/lighteval.git
+    cd lighteval 
+    pip install '.[accelerate,quantization,adapters]'
+    num_gpus=$(nvidia-smi --query-gpu=count --format=csv,noheader | head -n 1)
+
+    echo "Number of GPUs: $num_gpus"
+
+    if [[ $num_gpus -eq 0 ]]; then
+        echo "No GPUs detected. Exiting."
+        exit 1
+
+    elif [[ $num_gpus -gt 1 ]]; then
+        echo "Multi-GPU mode enabled."
+        accelerate launch --multi_gpu --num_processes=${num_gpus} run_evals_accelerate.py \
+        --model_args "pretrained=${MODEL_ID},dtype=$DTYPE" \
+        --use_chat_template \
+        --tasks ${LIGHT_EVAL_TASK} \
+        --output_dir="./evals/"
+
+    elif [[ $num_gpus -eq 1 ]]; then
+        echo "Single-GPU mode enabled."
+        accelerate launch run_evals_accelerate.py \
+        --model_args "pretrained=${MODEL_ID},dtype=$DTYPE" \
+        --use_chat_template \
+        --tasks ${LIGHT_EVAL_TASK} \
+        --output_dir="./evals/"
+    else
+        echo "Error: Invalid number of GPUs detected. Exiting."
+        exit 1
+    fi
+
+    end=$(date +%s)
+
+    python ../llm-autoeval/main.py ./evals/results $(($end-$start))
 
 elif [ "$BENCHMARK" == "eq-bench" ]; then
     git clone https://github.com/EleutherAI/lm-evaluation-harness
@@ -74,10 +215,16 @@ elif [ "$BENCHMARK" == "eq-bench" ]; then
         --batch_size auto \
         --output_path ./evals/${benchmark}.json
 
-    # (The rest of this section remains unchanged)
+    end=$(date +%s)
+
+    python ../llm-autoeval/main.py ./evals $(($end-$start))
 
 else
-    echo "Error: Invalid BENCHMARK value. Please set BENCHMARK to 'nous', 'openllm', 'lighteval', or 'eq-bench'."
+    echo "Error: Invalid BENCHMARK value. Please set BENCHMARK to 'nous', 'openllm', or 'lighteval'."
 fi
 
-# (The rest of the script remains unchanged)
+if [ "$DEBUG" == "False" ]; then
+    runpodctl remove pod $RUNPOD_POD_ID
+fi
+
+sleep infinity
